@@ -10,8 +10,9 @@
 #include <unistd.h>
 #include <atomic>
 
-// Global flag for threads to know game has started
+// Global flags for thread coordination
 std::atomic<bool> gameStarted(false);
+std::atomic<bool> gamePaused(false);
 
 // Collision detection between Pac-Man and ghosts
 // Returns: 0 = no collision, 1 = Pac-Man eats ghost, -1 = ghost catches Pac-Man
@@ -66,14 +67,37 @@ void* ghostControllerThread(void* arg) {
     if (!data->running) return nullptr;
     
     // Initial spawn: wait for staggered exit timing
-    usleep((data->ghostIndex + 1) * 3000000); // 3s, 6s, 9s, 12s
+    int waitMs = (data->ghostIndex + 1) * 3000;  // 3s, 6s, 9s, 12s in 100ms chunks
+    int waited = 0;
+    while (waited < waitMs && data->running) {
+        // Only count time when game is actively playing (not paused)
+        if (!gamePaused.load()) {
+            waited += 100;
+        }
+        usleep(100000);  // 100ms
+    }
+    if (!data->running) return nullptr;
+    
+    // Wait until game is unpaused to actually leave house
+    while (gamePaused.load() && data->running) {
+        usleep(100000);
+    }
+    if (!data->running) return nullptr;
     
     sem_wait(data->spawnSemaphore);
-    std::cout << "Ghost " << data->ghostIndex << " leaving house" << std::endl;
-    data->ghost->leaveHouse();
+    if (!gamePaused.load()) {  // Double-check not paused
+        std::cout << "Ghost " << data->ghostIndex << " leaving house" << std::endl;
+        data->ghost->leaveHouse();
+    }
     sem_post(data->spawnSemaphore);
     
     while (data->running) {
+        // Skip all processing while game is paused
+        if (gamePaused.load()) {
+            usleep(100000);  // Check every 100ms
+            continue;
+        }
+        
         pthread_mutex_lock(data->gameMutex);
         
         // Check if ghost returned to house (after being eaten)
@@ -180,6 +204,23 @@ void drawScore(sf::RenderWindow& window, const Pacman& pacman, sf::Font& font) {
     livesText.setFillColor(sf::Color::White);
     livesText.setPosition(sf::Vector2f(Config::WINDOW_WIDTH - 120.f, 10.f));
     window.draw(livesText);
+}
+
+void resetGame(Maze& maze, Pacman& pacman, Ghost* ghosts[4]) {
+    // Reset maze (restore coins)
+    maze.initialize();
+    
+    // Reset Pac-Man
+    pacman.spawn(maze);
+    pacman.score = 0;
+    pacman.lives = 3;
+    pacman.powered = false;
+    pacman.powerTimer = 0;
+    
+    // Reset ghosts
+    for (int i = 0; i < 4; i++) {
+        ghosts[i]->spawn(maze, maze.getGhostSpawnNode(i));
+    }
 }
 
 int main() {
@@ -314,7 +355,21 @@ int main() {
         // Update game state (protected by mutex)
         pthread_mutex_lock(&threadManager.gameMutex);
         
+        // Handle menu requests
+        if (menu.requestNewGame) {
+            menu.requestNewGame = false;
+            resetGame(maze, pacman, ghosts);
+            gameStarted.store(false);  // Reset for ghost threads
+        }
+        if (menu.requestExitToMenu) {
+            menu.requestExitToMenu = false;
+            // Keep game state for Continue option
+        }
+        
         if (menu.state == MenuState::PLAYING) {
+            gamePaused.store(false);  // Unpauses ghost threads
+            menu.hasActiveGame = true;  // Mark that game is in progress
+            
             // Signal threads that game has started
             if (!gameStarted.load()) {
                 gameStarted.store(true);
@@ -357,6 +412,9 @@ int main() {
                 menu.state = MenuState::WIN;
                 std::cout << "YOU WIN! Score: " << pacman.score << std::endl;
             }
+        } else {
+            // Game not playing - pause ghost threads
+            gamePaused.store(true);
         }
         
         pthread_mutex_unlock(&threadManager.gameMutex);
@@ -365,14 +423,22 @@ int main() {
         window.clear(sf::Color::Black);
         
         pthread_mutex_lock(&threadManager.gameMutex);
-        drawMaze(window, maze, mazeSprite);
-        if (showDebug) {
-            drawNodeGraph(window, maze);
+        
+        // Draw maze background
+        window.draw(mazeSprite);
+        
+        // Only draw game entities when not in main menu
+        if (menu.state != MenuState::MAIN_MENU) {
+            drawMaze(window, maze, mazeSprite);
+            if (showDebug) {
+                drawNodeGraph(window, maze);
+            }
+            window.draw(pacman.sprite);
+            for (Ghost* ghost : ghosts) {
+                window.draw(ghost->sprite);
+            }
         }
-        window.draw(pacman.sprite);
-        for (Ghost* ghost : ghosts) {
-            window.draw(ghost->sprite);
-        }
+        
         menu.draw(window, pacman.score, pacman.lives);
         pthread_mutex_unlock(&threadManager.gameMutex);
         
