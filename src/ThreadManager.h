@@ -79,8 +79,8 @@ public:
             return false;
         }
         
-        // speedBoost: starts at 0, signaled when Pac-Man gets power pellet
-        speedBoost = sem_open("/pacman_boost", O_CREAT | O_EXCL, 0644, 0);
+        // speedBoost: starts at 1, one ghost at a time can get speed boost
+        speedBoost = sem_open("/pacman_boost", O_CREAT | O_EXCL, 0644, 1);
         if (speedBoost == SEM_FAILED) {
             std::cerr << "Failed to create speed boost semaphore: " << strerror(errno) << std::endl;
             return false;

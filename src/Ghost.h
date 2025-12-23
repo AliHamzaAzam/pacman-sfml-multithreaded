@@ -271,7 +271,7 @@ private:
         // Choose based on state and ghost type
         switch (state) {
             case GhostState::FRIGHTENED:
-                return randomDirection(available);
+                return fleeDirection(maze, pacman, node, available);
                 
             case GhostState::CHASE:
                 return chaseDirection(maze, pacman, node, available);
@@ -321,6 +321,29 @@ private:
             float dist = dx*dx + dy*dy;
             
             if (dist < bestDist) {
+                bestDist = dist;
+                best = dir;
+            }
+        }
+        return best;
+    }
+    
+    Direction fleeDirection(const Maze& maze, const Pacman& pacman, const Node& node,
+                           const std::vector<Direction>& available) {
+        // Move AWAY from Pac-Man (maximize distance)
+        float pacX = pacman.x;
+        float pacY = pacman.y;
+        
+        Direction best = available[0];
+        float bestDist = -1.0f;  // We want maximum distance
+        
+        for (Direction dir : available) {
+            int neighborId = node.neighbors[dir];
+            float dx = maze.nodeX(neighborId) - pacX;
+            float dy = maze.nodeY(neighborId) - pacY;
+            float dist = dx*dx + dy*dy;  // Distance squared
+            
+            if (dist > bestDist) {  // Find MAXIMUM distance
                 bestDist = dist;
                 best = dir;
             }

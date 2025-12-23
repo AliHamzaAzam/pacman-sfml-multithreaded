@@ -126,6 +126,28 @@ void* ghostControllerThread(void* arg) {
             sem_post(data->spawnSemaphore);
         } else {
             pthread_mutex_unlock(data->gameMutex);
+            
+            // Speed boost logic: randomly try to acquire (1 in 200 chance per frame)
+            static int boostCounter[4] = {0, 0, 0, 0};
+            if (boostCounter[data->ghostIndex] > 0) {
+                // Ghost currently has speed boost active
+                boostCounter[data->ghostIndex]--;
+                pthread_mutex_lock(data->gameMutex);
+                data->ghost->speed = data->ghost->baseSpeed * 2.0f;  // 2x speed boost!
+                pthread_mutex_unlock(data->gameMutex);
+                
+                if (boostCounter[data->ghostIndex] == 0) {
+                    // Boost expired, release semaphore
+                    std::cout << "Ghost " << data->ghostIndex << " speed boost ended" << std::endl;
+                    sem_post(data->speedBoost);
+                }
+            } else if (rand() % 200 == 0) {  // Lower chance = less frequent
+                // Try to acquire speed boost
+                if (sem_trywait(data->speedBoost) == 0) {
+                    std::cout << "Ghost " << data->ghostIndex << " got speed boost!" << std::endl;
+                    boostCounter[data->ghostIndex] = 150;  // ~3 seconds at 50 FPS
+                }
+            }
         }
         
         usleep(20000); // ~50 FPS
