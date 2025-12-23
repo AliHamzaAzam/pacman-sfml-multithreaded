@@ -42,6 +42,7 @@ public:
     // AI mode switching (chase <-> scatter)
     float modeTimer;
     float scatterTargetX, scatterTargetY;  // Corner target for scatter mode
+    float blinkTimer;  // For frightened blinking animation
     
     // SFML
     sf::Texture texture;
@@ -53,7 +54,8 @@ public:
                                   direction(DIR_NONE),
                                   x(0), y(0), speed(1.5f), baseSpeed(1.5f),
                                   state(GhostState::IN_HOUSE), inHouse(true),
-                                  modeTimer(0), scatterTargetX(0), scatterTargetY(0) {
+                                  modeTimer(0), scatterTargetX(0), scatterTargetY(0),
+                                  blinkTimer(0) {
         
         if (!texture.loadFromFile("resources/sprites.png")) {
             // Handle error
@@ -117,16 +119,19 @@ public:
             return;
         }
         
-        // State-based speed
+        // State-based speed and timers
         switch (state) {
             case GhostState::FRIGHTENED:
                 speed = baseSpeed * 0.5f;
+                blinkTimer += dt;  // For blinking animation
                 break;
             case GhostState::EATEN:
                 speed = baseSpeed * 2.0f;
+                blinkTimer = 0;
                 break;
             default:
                 speed = baseSpeed;
+                blinkTimer = 0;
                 break;
         }
         
@@ -425,6 +430,14 @@ private:
     void updateSprite(bool pacmanPowered) {
         int scared = (state == GhostState::FRIGHTENED) ? 550 : 0;
         int texX = (state == GhostState::FRIGHTENED) ? 0 : textureOffsetX;
+        
+        // Blinking when frightened (alternates every 0.25s)
+        if (state == GhostState::FRIGHTENED) {
+            bool blink = (static_cast<int>(blinkTimer * 4) % 2) == 0;
+            if (blink) {
+                texX = 50;  // White/flashing texture
+            }
+        }
         
         int dirOffset = 0;
         switch (direction) {
