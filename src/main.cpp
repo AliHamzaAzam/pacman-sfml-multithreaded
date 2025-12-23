@@ -8,6 +8,37 @@
 #include <iostream>
 #include <unistd.h>
 
+// Game state
+enum class GameState {
+    PLAYING,
+    PAUSED,
+    PACMAN_DYING,
+    GAME_OVER,
+    WIN
+};
+
+// Collision detection between Pac-Man and ghosts
+// Returns: 0 = no collision, 1 = Pac-Man eats ghost, -1 = ghost catches Pac-Man
+int checkCollision(Pacman& pacman, Ghost& ghost) {
+    float dx = pacman.x - ghost.x;
+    float dy = pacman.y - ghost.y;
+    float distSq = dx*dx + dy*dy;
+    float collisionDist = 20.0f; // Collision radius
+    
+    if (distSq < collisionDist * collisionDist) {
+        if (ghost.state == GhostState::IN_HOUSE) {
+            return 0; // No collision with ghosts in house
+        }
+        if (ghost.state == GhostState::FRIGHTENED) {
+            return 1; // Pac-Man eats ghost
+        }
+        if (ghost.state == GhostState::EATEN) {
+            return 0; // Already eaten, no collision
+        }
+        return -1; // Ghost catches Pac-Man
+    }
+    return 0;
+}
 // Game engine thread function - handles Pac-Man movement, collision, etc.
 void* gameEngineThread(void* arg) {
     GameThreadData* data = static_cast<GameThreadData*>(arg);
@@ -201,6 +232,7 @@ int main() {
     window.setFramerateLimit(Config::FPS);
     
     bool showDebug = false;
+    GameState gameState = GameState::PLAYING;
     sf::Clock clock;
     
     std::cout << "Controls: Arrows=move, D=debug, ESC=quit" << std::endl;
@@ -252,10 +284,48 @@ int main() {
         
         // Update game state (protected by mutex)
         pthread_mutex_lock(&threadManager.gameMutex);
-        pacman.update(maze, dt);
-        for (Ghost* ghost : ghosts) {
-            ghost->update(maze, pacman, dt);
+        
+        if (gameState == GameState::PLAYING) {
+            pacman.update(maze, dt);
+            for (Ghost* ghost : ghosts) {
+                ghost->update(maze, pacman, dt);
+            }
+            
+            // Check collisions
+            for (Ghost* ghost : ghosts) {
+                int collision = checkCollision(pacman, *ghost);
+                if (collision == 1) {
+                    // Pac-Man eats ghost
+                    ghost->state = GhostState::EATEN;
+                    pacman.score += 200;
+                    std::cout << "Ghost eaten! Score: " << pacman.score << std::endl;
+                }
+                else if (collision == -1) {
+                    // Ghost catches Pac-Man
+                    pacman.lives--;
+                    std::cout << "Pac-Man caught! Lives: " << pacman.lives << std::endl;
+                    
+                    if (pacman.lives <= 0) {
+                        gameState = GameState::GAME_OVER;
+                        std::cout << "GAME OVER!" << std::endl;
+                    } else {
+                        // Reset positions
+                        pacman.spawn(maze);
+                        for (int i = 0; i < 4; i++) {
+                            ghosts[i]->spawn(maze, maze.getGhostSpawnNode(i));
+                            ghosts[i]->state = GhostState::CHASE; // Don't go back to house
+                        }
+                    }
+                }
+            }
+            
+            // Check win condition
+            if (maze.allCoinsCollected()) {
+                gameState = GameState::WIN;
+                std::cout << "YOU WIN! Score: " << pacman.score << std::endl;
+            }
         }
+        
         pthread_mutex_unlock(&threadManager.gameMutex);
         
         // Render (main thread only - SFML requirement)

@@ -110,6 +110,7 @@ public:
         if (nodeId < 0 || nodeId >= (int)nodes.size()) return false;
         if (nodes[nodeId].content == CellContent::POWER_PELLET) {
             nodes[nodeId].content = CellContent::EMPTY;
+            coinsCollected++;  // Count towards win condition
             return true;
         }
         return false;
