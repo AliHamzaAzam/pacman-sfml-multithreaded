@@ -61,9 +61,9 @@ struct Node {
 class Maze {
 public:
     // Scale factor: maze_data.h pixels to screen pixels
-    static constexpr float SCALE = 0.65f;  // Adjust to fit window
-    static constexpr float OFFSET_X = 30.0f;
-    static constexpr float OFFSET_Y = 60.0f;
+    static constexpr float SCALE = 0.68f;  // Adjust to fit window
+    static constexpr float OFFSET_X = 10.0f;
+    static constexpr float OFFSET_Y = 10.0f;
     
 private:
     std::vector<Node> nodes;
@@ -191,14 +191,15 @@ private:
                 node.content = CellContent::POWER_PELLET;
             }
             
-            // Ghost house area (grid rows 11-17, cols 10-18)
-            if (node.gridY >= 11 && node.gridY <= 17 && 
-                node.gridX >= 10 && node.gridX <= 18) {
+            // Ghost house interior only (grid rows 12-16, cols 11-17) - no coins
+            // This is more restrictive to keep the entrance (node 25) and surroundings having pellets
+            if (node.gridY >= 12 && node.gridY <= 16 && 
+                node.gridX >= 11 && node.gridX <= 17) {
                 node.isGhostHouse = true;
-                node.content = CellContent::EMPTY;  // No coins in ghost house
+                node.content = CellContent::EMPTY;  // No coins in ghost house interior
             }
             
-            // Tunnel nodes (leftmost/rightmost)
+            // Mark tunnel nodes but keep their coins
             if (node.gridX <= 1 || node.gridX >= 26) {
                 node.isTunnel = true;
             }

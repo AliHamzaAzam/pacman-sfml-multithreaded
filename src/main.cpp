@@ -3,19 +3,15 @@
 #include "Pacman.h"
 #include "Ghost.h"
 #include "ThreadManager.h"
+#include "Menu.h"
 
 #include <SFML/Graphics.hpp>
 #include <iostream>
 #include <unistd.h>
+#include <atomic>
 
-// Game state
-enum class GameState {
-    PLAYING,
-    PAUSED,
-    PACMAN_DYING,
-    GAME_OVER,
-    WIN
-};
+// Global flag for threads to know game has started
+std::atomic<bool> gameStarted(false);
 
 // Collision detection between Pac-Man and ghosts
 // Returns: 0 = no collision, 1 = Pac-Man eats ghost, -1 = ghost catches Pac-Man
@@ -62,6 +58,12 @@ void* gameEngineThread(void* arg) {
 // Ghost controller thread function
 void* ghostControllerThread(void* arg) {
     GhostThreadData* data = static_cast<GhostThreadData*>(arg);
+    
+    // Wait for game to start (menu to transition to PLAYING)
+    while (!gameStarted.load() && data->running) {
+        usleep(100000);  // Check every 100ms
+    }
+    if (!data->running) return nullptr;
     
     // Initial spawn: wait for staggered exit timing
     usleep((data->ghostIndex + 1) * 3000000); // 3s, 6s, 9s, 12s
@@ -203,7 +205,7 @@ int main() {
     mazeSprite.setPosition(sf::Vector2f(Maze::OFFSET_X, Maze::OFFSET_Y));
     
     sf::Font font;
-    if (!font.openFromFile("resources/font.ttf")) {
+    if (!font.openFromFile("resources/PAC-FONT.TTF")) {
         std::cerr << "Warning: Could not load font, score display disabled" << std::endl;
     }
     
@@ -251,10 +253,10 @@ int main() {
     window.setFramerateLimit(Config::FPS);
     
     bool showDebug = false;
-    GameState gameState = GameState::PLAYING;
+    Menu menu;
     sf::Clock clock;
     
-    std::cout << "Controls: Arrows=move, D=debug, ESC=quit" << std::endl;
+    std::cout << "Controls: Arrows=move, P=pause, D=debug" << std::endl;
 
     while (window.isOpen()) {
         float dt = clock.restart().asSeconds();
@@ -268,35 +270,43 @@ int main() {
             if (event->is<sf::Event::KeyPressed>()) {
                 auto keyEvent = event->getIf<sf::Event::KeyPressed>();
                 
-                switch (keyEvent->code) {
-                    case sf::Keyboard::Key::Right:
-                        pthread_mutex_lock(&threadManager.gameMutex);
-                        pacman.setDirection(DIR_RIGHT);
-                        pthread_mutex_unlock(&threadManager.gameMutex);
-                        break;
-                    case sf::Keyboard::Key::Down:
-                        pthread_mutex_lock(&threadManager.gameMutex);
-                        pacman.setDirection(DIR_DOWN);
-                        pthread_mutex_unlock(&threadManager.gameMutex);
-                        break;
-                    case sf::Keyboard::Key::Left:
-                        pthread_mutex_lock(&threadManager.gameMutex);
-                        pacman.setDirection(DIR_LEFT);
-                        pthread_mutex_unlock(&threadManager.gameMutex);
-                        break;
-                    case sf::Keyboard::Key::Up:
-                        pthread_mutex_lock(&threadManager.gameMutex);
-                        pacman.setDirection(DIR_UP);
-                        pthread_mutex_unlock(&threadManager.gameMutex);
-                        break;
-                    case sf::Keyboard::Key::D:
-                        showDebug = !showDebug;
-                        break;
-                    case sf::Keyboard::Key::Escape:
-                        window.close();
-                        break;
-                    default:
-                        break;
+                // Handle menu input
+                menu.handleInput(keyEvent->code);
+                
+                // Check for exit 
+                if (keyEvent->code == sf::Keyboard::Key::Enter && menu.shouldExit()) {
+                    window.close();
+                }
+                
+                // Game controls only when playing
+                if (menu.state == MenuState::PLAYING) {
+                    switch (keyEvent->code) {
+                        case sf::Keyboard::Key::Right:
+                            pthread_mutex_lock(&threadManager.gameMutex);
+                            pacman.setDirection(DIR_RIGHT);
+                            pthread_mutex_unlock(&threadManager.gameMutex);
+                            break;
+                        case sf::Keyboard::Key::Down:
+                            pthread_mutex_lock(&threadManager.gameMutex);
+                            pacman.setDirection(DIR_DOWN);
+                            pthread_mutex_unlock(&threadManager.gameMutex);
+                            break;
+                        case sf::Keyboard::Key::Left:
+                            pthread_mutex_lock(&threadManager.gameMutex);
+                            pacman.setDirection(DIR_LEFT);
+                            pthread_mutex_unlock(&threadManager.gameMutex);
+                            break;
+                        case sf::Keyboard::Key::Up:
+                            pthread_mutex_lock(&threadManager.gameMutex);
+                            pacman.setDirection(DIR_UP);
+                            pthread_mutex_unlock(&threadManager.gameMutex);
+                            break;
+                        case sf::Keyboard::Key::D:
+                            showDebug = !showDebug;
+                            break;
+                        default:
+                            break;
+                    }
                 }
             }
         }
@@ -304,7 +314,11 @@ int main() {
         // Update game state (protected by mutex)
         pthread_mutex_lock(&threadManager.gameMutex);
         
-        if (gameState == GameState::PLAYING) {
+        if (menu.state == MenuState::PLAYING) {
+            // Signal threads that game has started
+            if (!gameStarted.load()) {
+                gameStarted.store(true);
+            }
             pacman.update(maze, dt);
             for (Ghost* ghost : ghosts) {
                 ghost->update(maze, pacman, dt);
@@ -325,7 +339,7 @@ int main() {
                     std::cout << "Pac-Man caught! Lives: " << pacman.lives << std::endl;
                     
                     if (pacman.lives <= 0) {
-                        gameState = GameState::GAME_OVER;
+                        menu.state = MenuState::GAME_OVER;
                         std::cout << "GAME OVER!" << std::endl;
                     } else {
                         // Reset positions
@@ -340,7 +354,7 @@ int main() {
             
             // Check win condition
             if (maze.allCoinsCollected()) {
-                gameState = GameState::WIN;
+                menu.state = MenuState::WIN;
                 std::cout << "YOU WIN! Score: " << pacman.score << std::endl;
             }
         }
@@ -359,7 +373,7 @@ int main() {
         for (Ghost* ghost : ghosts) {
             window.draw(ghost->sprite);
         }
-        drawScore(window, pacman, font);
+        menu.draw(window, pacman.score, pacman.lives);
         pthread_mutex_unlock(&threadManager.gameMutex);
         
         window.display();

@@ -2,9 +2,9 @@
 #define CONSTANTS_H
 
 namespace Config {
-    // Window settings
-    constexpr int WINDOW_WIDTH = 720;
-    constexpr int WINDOW_HEIGHT = 930;
+    // Window settings - sized to fit maze + HUD
+    constexpr int WINDOW_WIDTH = 650;   // Maze scaled width + margins
+    constexpr int WINDOW_HEIGHT = 750;  // Maze scaled height + HUD area
     constexpr int FPS = 60;
     
     // Maze settings

@@ -243,6 +243,10 @@ private:
         for (int d = 0; d < 4; d++) {
             Direction dir = static_cast<Direction>(d);
             if (node.hasNeighbor(dir) && dir != opposite) {
+                // Block ghost house entry (node 25 -> 32) for non-EATEN ghosts
+                if (currentNode == 25 && node.neighbors[dir] == 32 && state != GhostState::EATEN) {
+                    continue;  // Skip this direction
+                }
                 available.push_back(dir);
             }
         }
