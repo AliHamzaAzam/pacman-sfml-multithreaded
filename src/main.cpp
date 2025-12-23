@@ -2,15 +2,66 @@
 #include "Maze.h"
 #include "Pacman.h"
 #include "Ghost.h"
+#include "ThreadManager.h"
 
 #include <SFML/Graphics.hpp>
 #include <iostream>
+#include <unistd.h>
+
+// Game engine thread function - handles Pac-Man movement, collision, etc.
+void* gameEngineThread(void* arg) {
+    GameThreadData* data = static_cast<GameThreadData*>(arg);
+    
+    while (data->running) {
+        // Lock mutex before modifying game state
+        pthread_mutex_lock(data->gameMutex);
+        
+        // Note: actual update happens in main loop for now
+        // This thread will handle collision detection
+        
+        pthread_mutex_unlock(data->gameMutex);
+        
+        usleep(16000); // ~60 FPS (16ms)
+    }
+    
+    std::cout << "Game engine thread exiting" << std::endl;
+    return nullptr;
+}
+
+// Ghost controller thread function
+void* ghostControllerThread(void* arg) {
+    GhostThreadData* data = static_cast<GhostThreadData*>(arg);
+    
+    // Wait for spawn permission (simulates ghost house exit timing)
+    // All ghosts start inside, leave one-by-one starting at 3s
+    usleep((data->ghostIndex + 1) * 3000000); // 3s, 6s, 9s, 12s
+    
+    sem_wait(data->spawnSemaphore); // Acquire spawn slot
+    std::cout << "Ghost " << data->ghostIndex << " leaving house" << std::endl;
+    
+    // Leave ghost house
+    data->ghost->leaveHouse();
+    
+    sem_post(data->spawnSemaphore); // Release for next ghost
+    
+    while (data->running) {
+        pthread_mutex_lock(data->gameMutex);
+        
+        // Ghost AI logic would go here
+        // Currently handled in main update loop
+        
+        pthread_mutex_unlock(data->gameMutex);
+        
+        usleep(20000); // ~50 FPS for ghosts
+    }
+    
+    std::cout << "Ghost " << data->ghostIndex << " thread exiting" << std::endl;
+    return nullptr;
+}
 
 void drawMaze(sf::RenderWindow& window, const Maze& maze, sf::Sprite& mazeSprite) {
-    // Draw the maze background image
     window.draw(mazeSprite);
     
-    // Draw coins at nodes
     sf::CircleShape coin(3.0f);
     coin.setFillColor(sf::Color::Yellow);
     coin.setOrigin(sf::Vector2f(3.0f, 3.0f));
@@ -31,22 +82,23 @@ void drawMaze(sf::RenderWindow& window, const Maze& maze, sf::Sprite& mazeSprite
     }
 }
 
-// Debug visualization of nodes and connections
 void drawNodeGraph(sf::RenderWindow& window, const Maze& maze) {
     sf::CircleShape nodeMarker(4.0f);
     nodeMarker.setFillColor(sf::Color::Green);
     nodeMarker.setOrigin(sf::Vector2f(4.0f, 4.0f));
     
-    // Draw edges
     for (size_t i = 0; i < maze.nodeCount(); i++) {
         const Node& node = maze.getNode(i);
         float x1 = maze.nodeX(i);
         float y1 = maze.nodeY(i);
         
-        // Only draw RIGHT and DOWN to avoid duplicates
         for (int d = 0; d < 2; d++) {
             if (node.neighbors[d] >= 0) {
                 int n2 = node.neighbors[d];
+                // Skip tunnel connections in visualization
+                float dx = std::abs(maze.nodeX(n2) - x1);
+                if (dx > 400.0f) continue;
+                
                 sf::Vertex line[] = {
                     sf::Vertex{sf::Vector2f(x1, y1), sf::Color(50, 200, 50, 180)},
                     sf::Vertex{sf::Vector2f(maze.nodeX(n2), maze.nodeY(n2)), sf::Color(50, 200, 50, 180)}
@@ -56,11 +108,26 @@ void drawNodeGraph(sf::RenderWindow& window, const Maze& maze) {
         }
     }
     
-    // Draw nodes
     for (size_t i = 0; i < maze.nodeCount(); i++) {
         nodeMarker.setPosition(sf::Vector2f(maze.nodeX(i), maze.nodeY(i)));
         window.draw(nodeMarker);
     }
+}
+
+void drawScore(sf::RenderWindow& window, const Pacman& pacman, sf::Font& font) {
+    sf::Text scoreText(font);
+    scoreText.setString("Score: " + std::to_string(pacman.score));
+    scoreText.setCharacterSize(24);
+    scoreText.setFillColor(sf::Color::White);
+    scoreText.setPosition(sf::Vector2f(10.f, 10.f));
+    window.draw(scoreText);
+    
+    sf::Text livesText(font);
+    livesText.setString("Lives: " + std::to_string(pacman.lives));
+    livesText.setCharacterSize(24);
+    livesText.setFillColor(sf::Color::White);
+    livesText.setPosition(sf::Vector2f(Config::WINDOW_WIDTH - 120.f, 10.f));
+    window.draw(livesText);
 }
 
 int main() {
@@ -68,7 +135,14 @@ int main() {
     setenv("SFML_SILENCE_MACOS_KEYBOARD_WARNING", "1", 1);
 #endif
 
-    // Load maze texture
+    // Initialize thread manager
+    ThreadManager threadManager;
+    if (!threadManager.initialize()) {
+        std::cerr << "Failed to initialize thread manager" << std::endl;
+        return 1;
+    }
+
+    // Load resources
     sf::Texture mazeTexture;
     if (!mazeTexture.loadFromFile("resources/maze.png")) {
         std::cerr << "Failed to load maze.png" << std::endl;
@@ -78,19 +152,18 @@ int main() {
     mazeSprite.setScale(sf::Vector2f(Maze::SCALE, Maze::SCALE));
     mazeSprite.setPosition(sf::Vector2f(Maze::OFFSET_X, Maze::OFFSET_Y));
     
-    // Initialize maze
+    sf::Font font;
+    if (!font.openFromFile("resources/font.ttf")) {
+        std::cerr << "Warning: Could not load font, score display disabled" << std::endl;
+    }
+    
+    // Initialize game objects
     Maze maze;
     maze.initialize();
     
-    std::cout << "Maze initialized with " << maze.nodeCount() << " nodes" << std::endl;
-    std::cout << "Total coins: " << maze.getTotalCoins() << std::endl;
-    
-    // Initialize Pacman
     Pacman pacman;
     pacman.spawn(maze);
-    std::cout << "Pacman spawned at node " << pacman.currentNode << std::endl;
     
-    // Initialize Ghosts
     Ghost blinky(GhostType::BLINKY);
     Ghost pinky(GhostType::PINKY);
     Ghost inky(GhostType::INKY);
@@ -103,22 +176,39 @@ int main() {
     
     Ghost* ghosts[4] = {&blinky, &pinky, &inky, &clyde};
     
+    std::cout << "Maze: " << maze.nodeCount() << " nodes, " << maze.getTotalCoins() << " coins" << std::endl;
+    std::cout << "Pacman at node " << pacman.currentNode << std::endl;
+    
+    // Setup thread data
+    threadManager.setupGameThread(&maze, &pacman, ghosts, 4);
+    for (int i = 0; i < 4; i++) {
+        threadManager.setupGhostThread(i, &maze, &pacman, ghosts[i]);
+    }
+    
+    // Create threads
+    pthread_create(&threadManager.gameThread, nullptr, gameEngineThread, &threadManager.gameData);
+    for (int i = 0; i < 4; i++) {
+        pthread_create(&threadManager.ghostThreads[i], nullptr, ghostControllerThread, &threadManager.ghostData[i]);
+    }
+    
+    std::cout << "Started 5 threads (1 engine + 4 ghosts)" << std::endl;
+    
     // Create window
     sf::RenderWindow window(
         sf::VideoMode(sf::Vector2u(Config::WINDOW_WIDTH, Config::WINDOW_HEIGHT)),
-        "Pac-Man"
+        "Pac-Man (Multithreaded)"
     );
     window.setFramerateLimit(Config::FPS);
     
-    bool showDebug = true;  // Toggle with D key
+    bool showDebug = false;
     sf::Clock clock;
     
-    std::cout << "Game started. Controls: Arrow keys to move, D to toggle debug view" << std::endl;
+    std::cout << "Controls: Arrows=move, D=debug, ESC=quit" << std::endl;
 
     while (window.isOpen()) {
         float dt = clock.restart().asSeconds();
         
-        // Event handling
+        // Event handling (main thread only)
         while (auto event = window.pollEvent()) {
             if (event->is<sf::Event::Closed>()) {
                 window.close();
@@ -129,16 +219,24 @@ int main() {
                 
                 switch (keyEvent->code) {
                     case sf::Keyboard::Key::Right:
+                        pthread_mutex_lock(&threadManager.gameMutex);
                         pacman.setDirection(DIR_RIGHT);
+                        pthread_mutex_unlock(&threadManager.gameMutex);
                         break;
                     case sf::Keyboard::Key::Down:
+                        pthread_mutex_lock(&threadManager.gameMutex);
                         pacman.setDirection(DIR_DOWN);
+                        pthread_mutex_unlock(&threadManager.gameMutex);
                         break;
                     case sf::Keyboard::Key::Left:
+                        pthread_mutex_lock(&threadManager.gameMutex);
                         pacman.setDirection(DIR_LEFT);
+                        pthread_mutex_unlock(&threadManager.gameMutex);
                         break;
                     case sf::Keyboard::Key::Up:
+                        pthread_mutex_lock(&threadManager.gameMutex);
                         pacman.setDirection(DIR_UP);
+                        pthread_mutex_unlock(&threadManager.gameMutex);
                         break;
                     case sf::Keyboard::Key::D:
                         showDebug = !showDebug;
@@ -152,30 +250,43 @@ int main() {
             }
         }
         
-        // Update
+        // Update game state (protected by mutex)
+        pthread_mutex_lock(&threadManager.gameMutex);
         pacman.update(maze, dt);
         for (Ghost* ghost : ghosts) {
             ghost->update(maze, pacman, dt);
         }
+        pthread_mutex_unlock(&threadManager.gameMutex);
         
-        // Render
+        // Render (main thread only - SFML requirement)
         window.clear(sf::Color::Black);
         
+        pthread_mutex_lock(&threadManager.gameMutex);
         drawMaze(window, maze, mazeSprite);
-        
         if (showDebug) {
             drawNodeGraph(window, maze);
         }
-        
-        // Draw entities
         window.draw(pacman.sprite);
         for (Ghost* ghost : ghosts) {
             window.draw(ghost->sprite);
         }
+        drawScore(window, pacman, font);
+        pthread_mutex_unlock(&threadManager.gameMutex);
         
         window.display();
     }
 
+    // Stop all threads
+    threadManager.stopAll();
+    
+    // Wait for threads to finish
+    pthread_join(threadManager.gameThread, nullptr);
+    for (int i = 0; i < 4; i++) {
+        pthread_join(threadManager.ghostThreads[i], nullptr);
+    }
+    
+    std::cout << "All threads joined" << std::endl;
     std::cout << "Final score: " << pacman.score << std::endl;
+    
     return 0;
 }

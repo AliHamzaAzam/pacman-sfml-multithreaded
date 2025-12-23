@@ -97,6 +97,16 @@ public:
     }
     
     void update(const Maze& maze, const Pacman& pacman, float dt) {
+        // Bounce up/down while in ghost house
+        if (state == GhostState::IN_HOUSE) {
+            static float bounceTimer = 0;
+            bounceTimer += dt * 2.0f;
+            float baseY = maze.nodeY(currentNode);
+            y = baseY + std::sin(bounceTimer + currentNode) * 10.0f;
+            updateSprite(pacman.powered);
+            return;
+        }
+        
         // State-based speed
         switch (state) {
             case GhostState::FRIGHTENED:
