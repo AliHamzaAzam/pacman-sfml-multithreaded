@@ -84,13 +84,21 @@ public:
             
             // Try queued direction first
             if (queuedDirection != DIR_NONE && node.hasNeighbor(queuedDirection)) {
-                direction = queuedDirection;
-                targetNode = node.neighbors[direction];
+                int nextNode = node.neighbors[queuedDirection];
+                // Block ghost house entrance (25 → 32)
+                if (!(currentNode == 25 && nextNode == 32)) {
+                    direction = queuedDirection;
+                    targetNode = nextNode;
+                }
                 queuedDirection = DIR_NONE;
             }
             // Otherwise continue in current direction if possible
             else if (direction != DIR_NONE && node.hasNeighbor(direction)) {
-                targetNode = node.neighbors[direction];
+                int nextNode = node.neighbors[direction];
+                // Block ghost house entrance (25 → 32)
+                if (!(currentNode == 25 && nextNode == 32)) {
+                    targetNode = nextNode;
+                }
             }
         }
         

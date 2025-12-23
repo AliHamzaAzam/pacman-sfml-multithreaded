@@ -39,6 +39,10 @@ public:
     GhostState state;
     bool inHouse;
     
+    // AI mode switching (chase <-> scatter)
+    float modeTimer;
+    float scatterTargetX, scatterTargetY;  // Corner target for scatter mode
+    
     // SFML
     sf::Texture texture;
     sf::Sprite sprite;
@@ -48,29 +52,35 @@ public:
                                   currentNode(0), targetNode(-1),
                                   direction(DIR_NONE),
                                   x(0), y(0), speed(1.5f), baseSpeed(1.5f),
-                                  state(GhostState::IN_HOUSE), inHouse(true) {
+                                  state(GhostState::IN_HOUSE), inHouse(true),
+                                  modeTimer(0), scatterTargetX(0), scatterTargetY(0) {
         
         if (!texture.loadFromFile("resources/sprites.png")) {
             // Handle error
         }
         
-        // Set color based on type
+        // Set speed and scatter corner based on type
+        // Corners at ~(50,60), (600,60), (50,700), (600,700)
         switch (type) {
             case GhostType::BLINKY:
                 textureOffsetX = 0;
                 baseSpeed = 1.8f;
+                scatterTargetX = 600.0f; scatterTargetY = 60.0f;  // Top-right
                 break;
             case GhostType::PINKY:
                 textureOffsetX = 50;
                 baseSpeed = 1.6f;
+                scatterTargetX = 50.0f; scatterTargetY = 60.0f;   // Top-left
                 break;
             case GhostType::INKY:
                 textureOffsetX = 100;
                 baseSpeed = 1.5f;
+                scatterTargetX = 600.0f; scatterTargetY = 700.0f; // Bottom-right
                 break;
             case GhostType::CLYDE:
                 textureOffsetX = 150;
                 baseSpeed = 1.4f;
+                scatterTargetX = 50.0f; scatterTargetY = 700.0f;  // Bottom-left
                 break;
         }
         speed = baseSpeed;
@@ -120,10 +130,24 @@ public:
                 break;
         }
         
+        // Mode switching: alternate between chase and scatter
+        // Chase for 20s, scatter for 7s (like classic Pac-Man)
+        if (state == GhostState::CHASE || state == GhostState::SCATTER) {
+            modeTimer += dt;
+            float switchTime = (state == GhostState::CHASE) ? 20.0f : 7.0f;
+            if (modeTimer >= switchTime) {
+                modeTimer = 0;
+                state = (state == GhostState::CHASE) ? GhostState::SCATTER : GhostState::CHASE;
+                // Reverse direction on mode switch
+                direction = oppositeDir(direction);
+            }
+        }
+        
         // Handle frightened state from Pacman power-up
         if (pacman.powered && state != GhostState::EATEN && state != GhostState::IN_HOUSE) {
             if (state != GhostState::FRIGHTENED) {
                 state = GhostState::FRIGHTENED;
+                modeTimer = 0;  // Reset timer
                 // Reverse direction
                 direction = oppositeDir(direction);
                 if (targetNode >= 0) {
@@ -142,8 +166,14 @@ public:
             Direction newDir = chooseDirection(maze, pacman, node);
             
             if (newDir != DIR_NONE && node.hasNeighbor(newDir)) {
-                direction = newDir;
-                targetNode = node.neighbors[direction];
+                int nextNode = node.neighbors[newDir];
+                // Only EATEN ghosts can enter ghost house (25 → 32)
+                if (currentNode == 25 && nextNode == 32 && state != GhostState::EATEN) {
+                    // Block entry, try another direction
+                } else {
+                    direction = newDir;
+                    targetNode = nextNode;
+                }
             }
         }
         
@@ -171,6 +201,22 @@ public:
                 x += (dx / dist) * speed;
                 y += (dy / dist) * speed;
             }
+        }
+        
+        // Eaten ghost reached house? Revive with delay
+        if (state == GhostState::EATEN) {
+            // Only revive when reaching specific house nodes: 75, 32, or 34
+            if (currentNode == 75 || currentNode == 32 || currentNode == 34) {
+                // Back in house - wait for semaphore exit (via thread)
+                state = GhostState::IN_HOUSE;
+                inHouse = true;
+            }
+        }
+        
+        // Ghost leaving house reached exit? Start chasing
+        if (state == GhostState::LEAVING_HOUSE && currentNode == 25) {
+            state = GhostState::CHASE;
+            modeTimer = 0;
         }
         
         updateSprite(pacman.powered);
@@ -222,9 +268,98 @@ private:
                 return chaseDirection(maze, pacman, node, available);
                 
             case GhostState::SCATTER:
+                return scatterDirection(maze, node, available);
+            
+            case GhostState::EATEN:
+                return eatenDirection(maze, node, available);
+            
+            case GhostState::LEAVING_HOUSE:
+                return leavingHouseDirection(maze, node, available);
+                
             default:
-                return randomDirection(available);
+                return chaseDirection(maze, pacman, node, available);
         }
+    }
+    
+    Direction eatenDirection(const Maze& maze, const Node& node, 
+                             const std::vector<Direction>& available) {
+        // Target ghost house nodes: 75, 32, or 34
+        // Find which is closest and navigate there
+        static const int houseNodes[] = {75, 32, 34};
+        float bestHouseDist = 999999.0f;
+        int targetHouseNode = 32;
+        
+        for (int hn : houseNodes) {
+            float dx = maze.nodeX(hn) - x;
+            float dy = maze.nodeY(hn) - y;
+            float dist = dx*dx + dy*dy;
+            if (dist < bestHouseDist) {
+                bestHouseDist = dist;
+                targetHouseNode = hn;
+            }
+        }
+        
+        float houseX = maze.nodeX(targetHouseNode);
+        float houseY = maze.nodeY(targetHouseNode);
+        
+        Direction best = available[0];
+        float bestDist = 999999.0f;
+        
+        for (Direction dir : available) {
+            int neighborId = node.neighbors[dir];
+            float dx = maze.nodeX(neighborId) - houseX;
+            float dy = maze.nodeY(neighborId) - houseY;
+            float dist = dx*dx + dy*dy;
+            
+            if (dist < bestDist) {
+                bestDist = dist;
+                best = dir;
+            }
+        }
+        return best;
+    }
+    
+    Direction leavingHouseDirection(const Maze& maze, const Node& node, 
+                                     const std::vector<Direction>& available) {
+        // Target node 25 (ghost house exit)
+        float exitX = maze.nodeX(25);
+        float exitY = maze.nodeY(25);
+        
+        Direction best = available[0];
+        float bestDist = 999999.0f;
+        
+        for (Direction dir : available) {
+            int neighborId = node.neighbors[dir];
+            float dx = maze.nodeX(neighborId) - exitX;
+            float dy = maze.nodeY(neighborId) - exitY;
+            float dist = dx*dx + dy*dy;
+            
+            if (dist < bestDist) {
+                bestDist = dist;
+                best = dir;
+            }
+        }
+        return best;
+    }
+    
+    Direction scatterDirection(const Maze& maze, const Node& node, 
+                               const std::vector<Direction>& available) {
+        // Move towards assigned corner
+        Direction best = available[0];
+        float bestDist = 999999.0f;
+        
+        for (Direction dir : available) {
+            int neighborId = node.neighbors[dir];
+            float dx = maze.nodeX(neighborId) - scatterTargetX;
+            float dy = maze.nodeY(neighborId) - scatterTargetY;
+            float dist = dx*dx + dy*dy;
+            
+            if (dist < bestDist) {
+                bestDist = dist;
+                best = dir;
+            }
+        }
+        return best;
     }
     
     Direction chaseDirection(const Maze& maze, const Pacman& pacman, 

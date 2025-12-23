@@ -63,27 +63,46 @@ void* gameEngineThread(void* arg) {
 void* ghostControllerThread(void* arg) {
     GhostThreadData* data = static_cast<GhostThreadData*>(arg);
     
-    // Wait for spawn permission (simulates ghost house exit timing)
-    // All ghosts start inside, leave one-by-one starting at 3s
+    // Initial spawn: wait for staggered exit timing
     usleep((data->ghostIndex + 1) * 3000000); // 3s, 6s, 9s, 12s
     
-    sem_wait(data->spawnSemaphore); // Acquire spawn slot
+    sem_wait(data->spawnSemaphore);
     std::cout << "Ghost " << data->ghostIndex << " leaving house" << std::endl;
-    
-    // Leave ghost house
     data->ghost->leaveHouse();
-    
-    sem_post(data->spawnSemaphore); // Release for next ghost
+    sem_post(data->spawnSemaphore);
     
     while (data->running) {
         pthread_mutex_lock(data->gameMutex);
         
-        // Ghost AI logic would go here
-        // Currently handled in main update loop
+        // Check if ghost returned to house (after being eaten)
+        if (data->ghost->state == GhostState::IN_HOUSE && data->ghost->inHouse) {
+            // Wait until Pac-Man is not powered up
+            bool pacmanPowered = data->pacman->powered;
+            pthread_mutex_unlock(data->gameMutex);
+            
+            // Don't exit while Pac-Man is powered
+            if (pacmanPowered) {
+                usleep(100000); // Check again in 100ms
+                continue;
+            }
+            
+            // Staggered exit timing (same as game start)
+            usleep((data->ghostIndex + 1) * 3000000); // 3s, 6s, 9s, 12s
+            
+            sem_wait(data->spawnSemaphore);
+            pthread_mutex_lock(data->gameMutex);
+            // Double-check not powered and still in house
+            if (data->ghost->state == GhostState::IN_HOUSE && !data->pacman->powered) {
+                std::cout << "Ghost " << data->ghostIndex << " reviving" << std::endl;
+                data->ghost->leaveHouse();
+            }
+            pthread_mutex_unlock(data->gameMutex);
+            sem_post(data->spawnSemaphore);
+        } else {
+            pthread_mutex_unlock(data->gameMutex);
+        }
         
-        pthread_mutex_unlock(data->gameMutex);
-        
-        usleep(20000); // ~50 FPS for ghosts
+        usleep(20000); // ~50 FPS
     }
     
     std::cout << "Ghost " << data->ghostIndex << " thread exiting" << std::endl;
