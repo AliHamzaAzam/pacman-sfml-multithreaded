@@ -36,20 +36,116 @@ int checkCollision(Pacman& pacman, Ghost& ghost) {
     }
     return 0;
 }
-// Game engine thread function - handles Pac-Man movement, collision, etc.
+// Pac-Man controller thread function - handles Pac-Man movement
+void* pacmanControllerThread(void* arg) {
+    PacManThreadData* data = static_cast<PacManThreadData*>(arg);
+    
+    std::cout << "Pac-Man thread started" << std::endl;
+    
+    while (data->running) {
+        // Wait for game to start and not be paused
+        if (!gameStarted.load() || gamePaused.load()) {
+            usleep(50000);  // 50ms
+            continue;
+        }
+        
+        pthread_mutex_lock(data->gameMutex);
+        
+        // Acquire WRITE lock before modifying board (eating pellets)
+        pthread_rwlock_wrlock(data->boardLock);
+        
+        // Update Pac-Man position (includes eating pellets - write operation)
+        float dt = 0.016f;  // ~60 FPS
+        
+        // Check if about to eat a power pellet 
+        int currentNode = data->pacman->currentNode;
+        bool hadPowerPellet = data->maze->hasPowerPellet(currentNode);
+        
+        data->pacman->update(*data->maze, dt);
+        
+        // If ate a power pellet, use semaphore
+        if (hadPowerPellet && !data->maze->hasPowerPellet(currentNode)) {
+            // Try to acquire power pellet semaphore (ensures controlled eating)
+            if (sem_trywait(data->powerPelletSem) == 0) {
+                std::cout << "Power pellet consumed (semaphore acquired)" << std::endl;
+            }
+        }
+        
+        pthread_rwlock_unlock(data->boardLock);
+        pthread_mutex_unlock(data->gameMutex);
+        
+        usleep(16000);  // ~60 FPS
+    }
+    
+    std::cout << "Pac-Man thread exiting" << std::endl;
+    return nullptr;
+}
+
+// Game engine thread function - handles collisions, scoring, game state
 void* gameEngineThread(void* arg) {
     GameThreadData* data = static_cast<GameThreadData*>(arg);
     
+    std::cout << "Game engine thread started" << std::endl;
+    
     while (data->running) {
-        // Lock mutex before modifying game state
+        // Wait for game to start and not be paused
+        if (!gameStarted.load() || gamePaused.load()) {
+            usleep(50000);  // 50ms
+            continue;
+        }
+        
         pthread_mutex_lock(data->gameMutex);
         
-        // Note: actual update happens in main loop for now
-        // This thread will handle collision detection
+        // Acquire READ lock for ghost board reads
+        pthread_rwlock_rdlock(data->boardLock);
+        
+        // Update all ghosts (read board state for pathfinding)
+        float dt = 0.016f;
+        for (int i = 0; i < 4; i++) {
+            data->ghosts[i]->update(*data->maze, *data->pacman, dt);
+        }
+        
+        pthread_rwlock_unlock(data->boardLock);
+        
+        // Check collisions between Pac-Man and all ghosts
+        for (int i = 0; i < 4; i++) {
+            int collision = checkCollision(*data->pacman, *data->ghosts[i]);
+            if (collision == 1) {
+                // Pac-Man eats ghost
+                data->ghosts[i]->state = GhostState::EATEN;
+                data->pacman->score += 200;
+                std::cout << "Ghost " << i << " eaten! Score: " << data->pacman->score << std::endl;
+            }
+            else if (collision == -1) {
+                // Ghost catches Pac-Man
+                data->pacman->lives--;
+                std::cout << "Pac-Man caught! Lives: " << data->pacman->lives << std::endl;
+                
+                if (data->pacman->lives <= 0) {
+                    // Signal game over (main thread will handle menu state)
+                    data->gameOver = true;
+                    std::cout << "GAME OVER!" << std::endl;
+                } else {
+                    // Reset positions
+                    data->pacman->spawn(*data->maze);
+                    for (int j = 0; j < 4; j++) {
+                        data->ghosts[j]->spawn(*data->maze, data->maze->getGhostSpawnNode(j));
+                        data->ghosts[j]->state = GhostState::CHASE;
+                    }
+                }
+                break;  // Don't check more collisions this frame
+            }
+        }
+        
+        // Check win condition
+        if (data->maze->allCoinsCollected()) {
+            data->gameWon = true;
+            std::cout << "YOU WIN! Score: " << data->pacman->score << std::endl;
+        }
         
         pthread_mutex_unlock(data->gameMutex);
         
-        usleep(16000); // ~60 FPS (16ms)
+        usleep(16000);  // ~60 FPS
     }
     
     std::cout << "Game engine thread exiting" << std::endl;
@@ -84,12 +180,22 @@ void* ghostControllerThread(void* arg) {
     }
     if (!data->running) return nullptr;
     
-    sem_wait(data->spawnSemaphore);
-    if (!gamePaused.load()) {  // Double-check not paused
-        std::cout << "Ghost " << data->ghostIndex << " leaving house" << std::endl;
+    // Ghost House - Need KEY then EXIT_PERMIT (deadlock prevention via ordering)
+    // All ghosts acquire in same order: key first, then permit
+    std::cout << "Ghost " << data->ghostIndex << " waiting for key..." << std::endl;
+    sem_wait(data->keySem);  // Acquire key first
+    std::cout << "Ghost " << data->ghostIndex << " got key, waiting for exit permit..." << std::endl;
+    sem_wait(data->exitPermitSem);  // Then acquire permit
+    
+    if (!gamePaused.load()) {
+        std::cout << "Ghost " << data->ghostIndex << " leaving house (has key + permit)" << std::endl;
         data->ghost->leaveHouse();
     }
-    sem_post(data->spawnSemaphore);
+    
+    // Release in reverse order (best practice, though doesn't affect deadlock)
+    sem_post(data->exitPermitSem);
+    sem_post(data->keySem);
+    std::cout << "Ghost " << data->ghostIndex << " released key and permit" << std::endl;
     
     while (data->running) {
         // Skip all processing while game is paused
@@ -115,20 +221,27 @@ void* ghostControllerThread(void* arg) {
             // Staggered exit timing (same as game start)
             usleep((data->ghostIndex + 1) * 3000000); // 3s, 6s, 9s, 12s
             
-            sem_wait(data->spawnSemaphore);
+            // Ghost House - Need KEY then EXIT_PERMIT for revive too
+            sem_wait(data->keySem);
+            sem_wait(data->exitPermitSem);
+            
             pthread_mutex_lock(data->gameMutex);
-            // Double-check not powered and still in house
             if (data->ghost->state == GhostState::IN_HOUSE && !data->pacman->powered) {
-                std::cout << "Ghost " << data->ghostIndex << " reviving" << std::endl;
+                std::cout << "Ghost " << data->ghostIndex << " reviving (key + permit)" << std::endl;
                 data->ghost->leaveHouse();
             }
             pthread_mutex_unlock(data->gameMutex);
-            sem_post(data->spawnSemaphore);
+            
+            sem_post(data->exitPermitSem);
+            sem_post(data->keySem);
         } else {
             pthread_mutex_unlock(data->gameMutex);
             
-            // Speed boost logic: randomly try to acquire (1 in 200 chance per frame)
+            // Speed boost with PRIORITY for faster ghosts
+            // Blinky (0) and Pinky (1) are "faster" - they try more often
             static int boostCounter[4] = {0, 0, 0, 0};
+            int tryChance = (data->ghostIndex < 2) ? 100 : 300;  // Faster ghosts: 1/100, slower: 1/300
+            
             if (boostCounter[data->ghostIndex] > 0) {
                 // Ghost currently has speed boost active
                 boostCounter[data->ghostIndex]--;
@@ -141,8 +254,8 @@ void* ghostControllerThread(void* arg) {
                     std::cout << "Ghost " << data->ghostIndex << " speed boost ended" << std::endl;
                     sem_post(data->speedBoost);
                 }
-            } else if (rand() % 200 == 0) {  // Lower chance = less frequent
-                // Try to acquire speed boost
+            } else if (rand() % tryChance == 0) {
+                // Try to acquire speed boost (2 available)
                 if (sem_trywait(data->speedBoost) == 0) {
                     std::cout << "Ghost " << data->ghostIndex << " got speed boost!" << std::endl;
                     boostCounter[data->ghostIndex] = 150;  // ~3 seconds at 50 FPS
@@ -296,17 +409,19 @@ int main() {
     
     // Setup thread data
     threadManager.setupGameThread(&maze, &pacman, ghosts, 4);
+    threadManager.setupPacmanThread(&maze, &pacman);
     for (int i = 0; i < 4; i++) {
         threadManager.setupGhostThread(i, &maze, &pacman, ghosts[i]);
     }
     
     // Create threads
     pthread_create(&threadManager.gameThread, nullptr, gameEngineThread, &threadManager.gameData);
+    pthread_create(&threadManager.pacmanThread, nullptr, pacmanControllerThread, &threadManager.pacmanData);
     for (int i = 0; i < 4; i++) {
         pthread_create(&threadManager.ghostThreads[i], nullptr, ghostControllerThread, &threadManager.ghostData[i]);
     }
     
-    std::cout << "Started 5 threads (1 engine + 4 ghosts)" << std::endl;
+    std::cout << "Started 6 threads (1 engine + 1 Pac-Man + 4 ghosts)" << std::endl;
     
     // Create window
     sf::RenderWindow window(
@@ -389,53 +504,25 @@ int main() {
         }
         
         if (menu.state == MenuState::PLAYING) {
-            gamePaused.store(false);  // Unpauses ghost threads
+            gamePaused.store(false);  // Unpauses all worker threads
             menu.hasActiveGame = true;  // Mark that game is in progress
             
             // Signal threads that game has started
             if (!gameStarted.load()) {
                 gameStarted.store(true);
             }
-            pacman.update(maze, dt);
-            for (Ghost* ghost : ghosts) {
-                ghost->update(maze, pacman, dt);
-            }
             
-            // Check collisions
-            for (Ghost* ghost : ghosts) {
-                int collision = checkCollision(pacman, *ghost);
-                if (collision == 1) {
-                    // Pac-Man eats ghost
-                    ghost->state = GhostState::EATEN;
-                    pacman.score += 200;
-                    std::cout << "Ghost eaten! Score: " << pacman.score << std::endl;
-                }
-                else if (collision == -1) {
-                    // Ghost catches Pac-Man
-                    pacman.lives--;
-                    std::cout << "Pac-Man caught! Lives: " << pacman.lives << std::endl;
-                    
-                    if (pacman.lives <= 0) {
-                        menu.state = MenuState::GAME_OVER;
-                        std::cout << "GAME OVER!" << std::endl;
-                    } else {
-                        // Reset positions
-                        pacman.spawn(maze);
-                        for (int i = 0; i < 4; i++) {
-                            ghosts[i]->spawn(maze, maze.getGhostSpawnNode(i));
-                            ghosts[i]->state = GhostState::CHASE; // Don't go back to house
-                        }
-                    }
-                }
+            // Check for game over/win from game engine thread
+            if (threadManager.gameData.gameOver) {
+                menu.state = MenuState::GAME_OVER;
+                threadManager.gameData.gameOver = false;  // Reset flag
             }
-            
-            // Check win condition
-            if (maze.allCoinsCollected()) {
+            if (threadManager.gameData.gameWon) {
                 menu.state = MenuState::WIN;
-                std::cout << "YOU WIN! Score: " << pacman.score << std::endl;
+                threadManager.gameData.gameWon = false;  // Reset flag
             }
         } else {
-            // Game not playing - pause ghost threads
+            // Game not playing - pause all worker threads
             gamePaused.store(true);
         }
         

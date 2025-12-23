@@ -121,6 +121,12 @@ public:
     int getTotalCoins() const { return totalCoins; }
     int getCoinsCollected() const { return coinsCollected; }
     
+    // Check if node has power pellet 
+    bool hasPowerPellet(int nodeId) const {
+        if (nodeId < 0 || nodeId >= (int)nodes.size()) return false;
+        return nodes[nodeId].content == CellContent::POWER_PELLET;
+    }
+    
     // Find nearest node to a pixel position
     int findNearestNode(float px, float py) const {
         int nearest = -1;
