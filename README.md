@@ -2,6 +2,8 @@
 
 A classic Pac-Man clone built with SFML and POSIX threads, demonstrating concurrent programming concepts including mutexes, semaphores, and reader-writer locks.
 
+> Originally developed in 2024 as an OS course project. Rebuilt and modernized for GitHub publication.
+
 ![Gameplay](screenshots/gameplay.png)
 
 ## Features
