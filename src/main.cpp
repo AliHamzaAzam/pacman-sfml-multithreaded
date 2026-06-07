@@ -9,6 +9,33 @@
 #include <iostream>
 #include <unistd.h>
 #include <atomic>
+#include <climits>
+#include <libgen.h>
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#include <cstdint>
+#endif
+
+// Make asset paths ("resources/...") resolve regardless of the launch CWD by
+// switching to the directory that contains the executable. POSIX-only, which
+// matches this project's threading model (macOS + Linux).
+static void changeToExecutableDir() {
+    char path[PATH_MAX];
+#if defined(__APPLE__)
+    uint32_t size = sizeof(path);
+    if (_NSGetExecutablePath(path, &size) != 0) return; // buffer too small
+#else // Linux
+    ssize_t len = readlink("/proc/self/exe", path, sizeof(path) - 1);
+    if (len <= 0) return;
+    path[len] = '\0';
+#endif
+    char* dir = dirname(path); // may modify `path`; we don't use it afterwards
+    if (dir) {
+        if (chdir(dir) != 0) {
+            std::cerr << "Warning: could not chdir to executable directory" << std::endl;
+        }
+    }
+}
 
 // Global flags for thread coordination
 std::atomic<bool> gameStarted(false);
@@ -359,6 +386,7 @@ void resetGame(Maze& maze, Pacman& pacman, Ghost* ghosts[4]) {
 }
 
 int main() {
+    changeToExecutableDir();
 #ifdef __APPLE__
     setenv("SFML_SILENCE_MACOS_KEYBOARD_WARNING", "1", 1);
 #endif
