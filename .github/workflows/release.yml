@@ -2,7 +2,6 @@ name: release
 
 on:
   push:
-    branches: [native-release-pipeline]  # TEMP: pre-merge CI dry-run; removed before tagging
     tags: ['v*']
   workflow_dispatch:
 
