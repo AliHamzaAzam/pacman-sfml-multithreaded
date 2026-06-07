@@ -4,6 +4,14 @@ A classic Pac-Man clone built with SFML and POSIX threads, demonstrating concurr
 
 > Originally developed in 2024 as an OS course project. Rebuilt and modernized for GitHub publication.
 
+## Download & Play
+
+Pre-built binaries for **macOS** and **Linux** are attached to each [GitHub Release](../../releases). Download the zip for your platform, unzip it, and run `PacMan` (keep it next to its `resources/` folder).
+
+> **Windows is not supported.** The game is built on POSIX synchronization primitives (`pthread`, `pthread_rwlock_t`, POSIX named semaphores) to demonstrate OS concepts; these have no native MSVC equivalent. Run it on macOS, Linux, or WSL.
+
+> **macOS:** the binary is unsigned, so Gatekeeper will block the first launch. Right-click `PacMan` → **Open** → **Open**, or run `xattr -dr com.apple.quarantine PacMan` once in the unzipped folder.
+
 ![Gameplay](screenshots/gameplay.png)
 
 ## Features
@@ -74,22 +82,18 @@ Faster ghosts (Blinky, Pinky) have higher chance of acquiring speed boost:
 ### Prerequisites
 
 - C++17 compiler
-- CMake 3.16+
-- SFML 3.0
+- CMake 3.25+
+- A network connection on first build (SFML 3.0.1 is fetched and built from source — **no system SFML install required**)
+- **Linux only:** SFML build deps — `sudo apt-get install -y libxrandr-dev libxcursor-dev libxi-dev libudev-dev libgl1-mesa-dev libfreetype-dev`
 
-### macOS
+### Build (macOS / Linux)
 
 ```bash
-# Install dependencies
-brew install sfml cmake
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
 
-# Build
-mkdir build && cd build
-cmake ..
-make
-
-# Run
-./PacMan
+# Run (assets resolve relative to the executable, so any CWD works)
+./build/PacMan
 ```
 
 ## Controls
