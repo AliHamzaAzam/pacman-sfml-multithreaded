@@ -1,0 +1,83 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, name: linux }
+          - { os: macos-latest,  name: macos }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # SFML built from source needs X11/GL/freetype/udev on Linux.
+      # No audio deps: the game never uses SFML::Audio.
+      - name: Install Linux SFML build deps
+        if: matrix.name == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxrandr-dev libxcursor-dev libxi-dev libudev-dev \
+            libgl1-mesa-dev libfreetype-dev xvfb
+
+      - name: Configure & build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release -j
+
+      - name: Verify no non-system dynamic deps
+        shell: bash
+        run: |
+          if [ "${{ matrix.name }}" = "macos" ]; then
+            echo "== otool -L =="
+            otool -L build/PacMan
+            if otool -L build/PacMan | grep -E '/usr/local/|/opt/homebrew/|@rpath|@executable_path'; then
+              echo "ERROR: binary links a non-system library — zip would not run on a clean Mac"
+              exit 1
+            fi
+          else
+            echo "== ldd =="
+            ldd build/PacMan || true
+          fi
+
+      - name: Headless smoke test (Linux, from foreign CWD)
+        if: matrix.name == 'linux'
+        shell: bash
+        run: |
+          cd /tmp
+          timeout 8 xvfb-run -a "$GITHUB_WORKSPACE/build/PacMan" > /tmp/smoke.log 2>&1 || true
+          echo "--- smoke.log ---"; cat /tmp/smoke.log || true
+          if grep -qi "failed to load" /tmp/smoke.log; then
+            echo "ERROR: asset load failed — chdir-to-exe fix is not working"
+            exit 1
+          fi
+
+      - name: Package
+        shell: bash
+        run: |
+          STAGE="PacMan-${GITHUB_REF_NAME}-${{ matrix.name }}"
+          mkdir "$STAGE"
+          cp build/PacMan "$STAGE"/
+          cp -R build/resources "$STAGE"/
+          cp README.md LICENSE "$STAGE"/ 2>/dev/null || true
+          zip -r "${STAGE}.zip" "$STAGE"
+
+      - name: Upload to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: "*.zip"
+
+      - name: Upload workflow artifact
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: "*.zip"
