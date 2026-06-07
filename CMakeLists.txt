@@ -14,6 +14,11 @@ endif()
 # one self-contained binary (no dylibs/frameworks to ship).
 include(FetchContent)
 set(BUILD_SHARED_LIBS OFF)
+# The game uses neither audio nor networking. Skip building those SFML modules
+# so the Linux build doesn't require Vorbis/OGG/FLAC/OpenAL dev packages — SFML
+# configures (and on Linux find_package()s) every enabled module even if unlinked.
+set(SFML_BUILD_AUDIO OFF)
+set(SFML_BUILD_NETWORK OFF)
 FetchContent_Declare(SFML
     GIT_REPOSITORY https://github.com/SFML/SFML.git
     GIT_TAG 3.0.1
