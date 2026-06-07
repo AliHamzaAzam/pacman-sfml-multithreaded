@@ -84,7 +84,7 @@ Faster ghosts (Blinky, Pinky) have higher chance of acquiring speed boost:
 - C++17 compiler
 - CMake 3.25+
 - A network connection on first build (SFML 3.0.1 is fetched and built from source — **no system SFML install required**)
-- **Linux only:** SFML build deps — `sudo apt-get install -y libxrandr-dev libxcursor-dev libxi-dev libudev-dev libgl1-mesa-dev libfreetype-dev`
+- **Linux only:** SFML build deps — `sudo apt-get install -y libxrandr-dev libxcursor-dev libxi-dev libudev-dev libgl1-mesa-dev libfreetype-dev` (add `xvfb` only if running headless, e.g. WSL without a display)
 
 ### Build (macOS / Linux)
 
