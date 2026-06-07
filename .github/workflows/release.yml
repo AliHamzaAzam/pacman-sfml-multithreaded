@@ -5,6 +5,10 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+# Needed for softprops/action-gh-release to create/update the Release on tags.
+permissions:
+  contents: write
+
 jobs:
   build:
     strategy:
@@ -38,7 +42,9 @@ jobs:
           if [ "${{ matrix.name }}" = "macos" ]; then
             echo "== otool -L =="
             otool -L build/PacMan
-            if otool -L build/PacMan | grep -E '/usr/local/|/opt/homebrew/|@rpath|@executable_path'; then
+            # Only third-party (Homebrew) dylibs are a problem; @rpath/@executable_path
+            # tokens also appear on legitimate system frameworks, so don't flag those.
+            if otool -L build/PacMan | grep -E '/usr/local/|/opt/homebrew/'; then
               echo "ERROR: binary links a non-system library — zip would not run on a clean Mac"
               exit 1
             fi
@@ -52,8 +58,17 @@ jobs:
         shell: bash
         run: |
           cd /tmp
-          timeout 8 xvfb-run -a "$GITHUB_WORKSPACE/build/PacMan" > /tmp/smoke.log 2>&1 || true
-          echo "--- smoke.log ---"; cat /tmp/smoke.log || true
+          set +e
+          timeout 8 xvfb-run -a "$GITHUB_WORKSPACE/build/PacMan" > /tmp/smoke.log 2>&1
+          EXIT_CODE=$?
+          set -e
+          echo "--- smoke.log (exit $EXIT_CODE) ---"; cat /tmp/smoke.log || true
+          # 124 = timed out (game loop kept running) and 0 = clean exit are both fine;
+          # anything else means it crashed on startup.
+          if [ "$EXIT_CODE" -ne 124 ] && [ "$EXIT_CODE" -ne 0 ]; then
+            echo "ERROR: binary exited with code $EXIT_CODE — possible startup crash"
+            exit 1
+          fi
           if grep -qi "failed to load" /tmp/smoke.log; then
             echo "ERROR: asset load failed — chdir-to-exe fix is not working"
             exit 1
